@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import copy
 import json
 import time
@@ -8,19 +9,21 @@ import xml.dom.minidom
 
 import requests
 import pyqrcode
+import traceback
 
 from . import config
-from . import logger
 from .exception import WeChatBotError
 from .storage import Store, Cache
+
+import logging
+
+log = logging.getLogger(__name__)
 
 UNKNOWN = 'UNKNOWN'
 SUCCESS = '200'
 SCANNED = '201'
-BAD = '400'
+BAD_REQUEST = '400'
 TIMEOUT = '408'
-
-log = logger.getLogger(__name__)
 
 
 class WeChatBot(object):
@@ -35,9 +38,10 @@ class WeChatBot(object):
 
     def _get_default_conf(self):
         ret = {
-            'qr': config.DEFAULT_QR_PATH,
+            'qr': os.path.join(config.BASE_DIR, 'qr.png'),
             'tty': 1,
-            'email': None
+            'email': None,
+            'log': log,
         }
         for k, v in ret.items():
             setattr(self, k, v)
@@ -47,7 +51,7 @@ class WeChatBot(object):
         for k, v in conf.items():
             setattr(self, k, v)
 
-    def _get_res(self, reg='.*', url='', text='', params=None, headers=None,
+    def _get_res(self, reg=r'.*', url='', text='', params=None, headers=None,
                  json_res=False):
         res = None
         if text:
@@ -74,9 +78,9 @@ class WeChatBot(object):
                 'ContentType': 'application/json; charset=UTF-8',
             })
             headers = headers if headers else default_headers
-            r = self.session.post(url, data=json.dumps(data), headers=headers)
+            r = self.session.post(url, data=data, headers=headers)
             content = r.content.decode('utf-8', 'replace')
-        
+
         try:
             res = json.loads(content)
         except Exception as e:
@@ -115,7 +119,7 @@ class WeChatBot(object):
         if tty:
             return log.debug('Please Scan QR\n' + qr.terminal(quiet_zone=tty))
 
-        file_path = file_path if file_path else self.qr 
+        file_path = file_path if file_path else self.qr
         qr.png(file=file_path, scale=scale)
 
         if email and os.path.isfile(file_path):
@@ -132,7 +136,8 @@ class WeChatBot(object):
         'BaseResponse': {'Ret': 0, 'ErrMsg': ''},
         'ContactList': [
             {'Uin': 0,
-             'UserName': '@@e01dfac872324e045e111fbcbade96799dabc3e38e3c9c17fdaaacc15ff24139'
+             'UserName':
+             '@@e01dfac872324e045e111fbcbade96799dabc3e38e3c9c17fdaaacc15ff24139'
              ...
              }
         ]
@@ -153,9 +158,9 @@ class WeChatBot(object):
                     'EncryChatRoomId': ''
                 }
                 for user in user_list
-                ]
+            ]
         }
-        res = self._post_res(url, data)
+        res = self._post_res(url, data=json.dumps(data))
         return res
 
     def get_contacts(self):
@@ -166,7 +171,7 @@ class WeChatBot(object):
             self.cache.skey,
             int(time.time()),
         )
-        res = self._post_res(url, data={})
+        res = self._post_res(url, data=json.dumps({}))
         return res
 
     def contact_type(self, contact):
@@ -296,7 +301,7 @@ class WeChatBot(object):
         elif data:
             return status_code
         else:
-            return '400'
+            return BAD_REQUEST
 
     def request_ok(self, res):
         if not res:
@@ -314,7 +319,7 @@ class WeChatBot(object):
             "ToUserName": self.cache.self.get('UserName'),
             "ClientMsgId": int(time.time())
         }
-        res = self._post_res(url, data)
+        res = self._post_res(url, data=json.dumps(data))
         return self.request_ok(res)
 
     @staticmethod
@@ -322,7 +327,7 @@ class WeChatBot(object):
         sync_key_list = [
             '{}_{}'.format(item.get('Key'), item.get('Val'))
             for item in sync_key_dict.get('List')
-        ]
+            ]
         return '|'.join(sync_key_list)
 
     def _update_sync_key(self, sync_key_dict):
@@ -334,10 +339,10 @@ class WeChatBot(object):
         data = {
             'BaseRequest': self.cache.base_request
         }
-        res = self._post_res(url, data)
+        res = self._post_res(url, data=json.dumps(data))
         self.cache.set('self', res.get('User'))  # self info
         self._update_sync_key(res.get('SyncKey'))
-        return res
+        return self.request_ok(res)
 
     def _pre_login(self):
         log.info('Init uuid')
@@ -348,18 +353,19 @@ class WeChatBot(object):
             tty=self.tty,
             email=self.email,
         )
+        log.info('Waiting for Scan QR')
 
     def push_login(self):
         cookies_dict = self.session.cookies.get_dict()
         if not cookies_dict.get('wxuin'):
-            return {'ret': '-1', "msg": 'No wxuin in cookies', 'uuid': ''}
+            return False
 
         url = '{}/cgi-bin/mmwebwx-bin/webwxpushloginurl?uin={}'.format(
             config.ROOT_URL,
             cookies_dict['wxuin']
         )
         res = self._get_res(url=url, json_res=True)
-        request_ok = self.request_ok(res)
+        request_ok = self.request_ok(res) and 'uuid' in res
         if request_ok:
             self.cache.set('uuid', res.get('uuid'))
         return request_ok
@@ -379,14 +385,15 @@ class WeChatBot(object):
             elif login_status == SCANNED:
                 log.debug('Please Confirm Login On Your Phone')
             elif login_status == TIMEOUT:
+                time.sleep(10)
                 log.debug(TIMEOUT + ' Time Out! Retrying %d' % retry)
                 self._pre_login()
-            time.sleep(1)
             retry -= 1
+            log.debug('Retrying %d' % retry)
             if not retry:
                 log.error('Maximum Retries !!')
-        res = self._init_web()
-        return self.request_ok(res)
+                sys.exit()
+        return self._init_web()
 
     def logout(self):
         url = '{}/webwxlogout'.format(self.cache.ticket)
@@ -402,12 +409,12 @@ class WeChatBot(object):
     def sync_check(self):
         url = '{}/synccheck'.format(self.cache.sync_url)
         params = {
+            'r': int(time.time() * 1000),
             'skey': self.cache.skey,
             'sid': self.cache.wxsid,
             'uin': self.cache.wxuin,
             'deviceid': self.cache.deviceid,
             'synckey': self.cache.sync_key_str,
-            'r': int(time.time() * 1000),
             '_': int(time.time() * 1000),
         }
         reg = r'window.synccheck={retcode:"(?P<retcode>\d+)",' \
@@ -417,18 +424,17 @@ class WeChatBot(object):
 
     def sync(self):
         url = '{}/webwxsync?sid={}&skey={}&pass_ticket={}'.format(
-            self.cache.ticket, self.cache.wxsid, self.cache.skey, self.cache.pass_ticket
+            self.cache.ticket, self.cache.wxsid, self.cache.skey,
+            self.cache.pass_ticket
         )
         data = {
             'BaseRequest': self.cache.base_request,
             'SyncKey': self.cache.sync_key,
             'rr': ~int(time.time()),
         }
-        res = self._post_res(url=url, data=data)
-
-        ret_code = res.get('BaseResponse', {}).get('Ret')
-        if not ret_code == 0:
-            return None
+        res = self._post_res(url=url, data=json.dumps(data))
+        if not self.request_ok(res):
+            return {}
 
         self._update_sync_key(res.get('SyncCheckKey'))
         return res
@@ -447,46 +453,64 @@ class WeChatBot(object):
             return {}
         ret = list()
         for msg in msg_list:
-            from_user_name = msg.get('FromUserName')
+            from_user_name = msg['FromUserName']
             if not self.store.get(from_user_name):
                 self.add_new_contact([{'UserName': from_user_name}])
             if from_user_name.startswith('@@'):
-                # 'Content': '@75c2dc6b639c5a00068791bbbcbad88b7d1797eaa3d5038920db5d802146b30a:<br/>BB'
-                msg['FromUserName'], msg['Content'] = msg.get('Content').split(':<br/>')
-                msg['FromUserNickName'] = self.store.get(from_user_name).get('Members').get(msg['FromUserName']).get('NickName')
-                msg['FromGroupName'] = from_user_name
-                msg['FromGroupNickName'] = self.store.get(from_user_name).get('NickName')
+                # {'Content': '@75c2dc6b639c5a00068791bbbcbad88b7d1797eaa3d5038920db5d802146b30a:<br/>BB'}
+                reg = r'(?P<user_name>@\w+)(?:\:\<br\/\>)(?P<content>.*)'
+                res = re.search(reg, msg.get('Content', ''))
+                res_dict = res.groupdict() if res else {'content': msg.get('Content')}
+                msg['FromUserName'], msg['Content'] = res_dict.get('user_name'), res_dict.get('content')
+                from_group = copy.deepcopy(self.store.get(from_user_name)) or {}
+                members = from_group.pop('Members', {})
+                msg['FromGroup'] = from_group
+                msg['FromUser'] = copy.deepcopy(members.get(msg['FromUserName'])) or {}
             else:
-                msg['FromUserNickName'] = self.store.get(msg['FromUserName']).get('NickName')
+                msg['FromUser'] = self.store.get(msg['FromUserName'])
             ret.append(msg)
         return ret
 
     def receive_msg(self, msg):
         try:
-            msg = self.handle_msg(msg)
-        except Exception as e:
-            log.error('Handle Msg Error: %s' % e)
+            msgs = self.handle_msg(msg)
+        except:
+            log.error('Handle Msg Error:\n %s' % traceback.format_exc())
         else:
-            self.store.msgs.put(msg)
+            for msg in msgs:
+                self.store.msgs.put(msg)
 
     def _proc_msg(self):
-        while 1:
+        retry = config.MAX_RETRY
+        while retry:
             sync_time = time.time()
             retcode, selector = self.sync_check()
             if retcode == '0':
                 res = self.sync()
+                if not res or selector == '0':
+                    time.sleep(1)
+                    continue
                 if selector == '2':  # New msg
                     self.receive_msg(res)
             elif retcode in {'1100', '1101'}:
-                log.info('Log out')
-                break
+                retry -= 1
+                log.debug('Log out, Retrying')
+                if not retry:
+                    log.info('Log out')
+                    break
             else:
-                pass
-
-            self.handle()  # Run every time sync
-            sync_time = time.time() - sync_time
-            if sync_time < 0.8:
-                time.sleep(1 - sync_time)
+                log.debug('Unknown Code %s, Retrying' % repr([retcode, selector]))
+                retry -= 1
+                if not retry:
+                    log.info('Unkonwn Code %s, Log out' % repr([retcode, selector]))
+                    break
+            try:
+                self.handle()  # Run every time sync
+            except:
+                log.error(traceback.format_exc())
+            duration = time.time() - sync_time
+            if duration <= 20:
+                time.sleep(1)
 
     def run(self):
         self.login()
@@ -500,7 +524,7 @@ class WeChatBot(object):
                  str(random.random())[:5].replace('.', '')
         return msg_id
 
-    def send_msg(self, msg_content, to_user_name):
+    def _send_msg(self, msg_content, to_user_name):
         url = '{}/webwxsendmsg?pass_ticket={}'.format(
             self.cache.ticket, self.cache.pass_ticket
         )
@@ -516,5 +540,13 @@ class WeChatBot(object):
                 "ClientMsgId": msg_id
             }
         }
+        data = json.dumps(data, ensure_ascii=False).encode('utf8')
         res = self._post_res(url=url, data=data)
-        return res['BaseResponse']['Ret'] == 0
+        return self.request_ok(res)
+
+    def send_msg(self, msg_content, **kwargs):
+        user_list = self.store.select(**kwargs)
+        ret = list()
+        for user in user_list:
+            ret.append(int(self._send_msg(msg_content, user['UserName'])))
+        return ret

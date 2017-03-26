@@ -40,8 +40,6 @@ class Store(object):
 
     * 微信消息:
         -
-        -
-        -
 
     """
 
@@ -56,17 +54,14 @@ class Store(object):
         return self.cache.get(key)
 
     def select(self, **kwargs):
-        """"""
-
-    def has_user(self, user_name):
-        return self.cache.haskey()
-
-    def get_friend(self, user_name='', nick_name=''):
-        pass
-
-    def get_group(self, user_name, nick_name):
-        pass
-
-    def get_subscription_account(self, user_name, nick_name):
-        pass
+        """Select """
+        ret = list()
+        limit = kwargs.get('limit', 1)
+        for l, (k, v) in zip(itertools.count(), kwargs.items()):
+            for user_name, user in self.cache.items():
+                if user.get(k) == v:
+                    ret.append(user)
+                if limit is not None and l == limit:
+                    return ret
+        return ret
 
