@@ -1,6 +1,4 @@
 """"""
-
-
 import pickle
 import itertools
 from queue import Queue
@@ -8,6 +6,7 @@ from queue import Queue
 
 class Cache(dict):
     """"""
+
     def __getattr__(self, item):
         return self.get(item)
 
@@ -22,12 +21,18 @@ class Cache(dict):
 
     def dump(self, file):
         """"""
-        pickle.dump(self.all(), file)
+        with open(file, 'wb') as fp:
+            pickle.dump(self.all(), fp)
 
     def load(self, file):
-        obj = pickle.load(file)
-        for k, v in obj:
-            self.set(k, v)
+        try:
+            with open(file, 'rb') as fp:
+                obj = pickle.load(fp)
+            for item in obj:
+                self.set(*item)
+        except Exception as e:
+            return False
+        return True
 
 
 class Store(object):
@@ -37,10 +42,8 @@ class Store(object):
         - 好友
         - 群聊
         - 公众号
-
     * 微信消息:
         -
-
     """
 
     def __init__(self, backend=None):
@@ -54,7 +57,7 @@ class Store(object):
         return self.cache.get(key)
 
     def select(self, **kwargs):
-        """Select """
+        """ Select """
         ret = list()
         limit = kwargs.get('limit', 1)
         for l, (k, v) in zip(itertools.count(), kwargs.items()):
@@ -64,4 +67,3 @@ class Store(object):
                 if limit is not None and l == limit:
                     return ret
         return ret
-

@@ -5,14 +5,15 @@ from __future__ import absolute_import
 
 import os
 import logging
-from .config import BASE_DIR
+
+from django.conf import settings
 
 
 def getLogger(name):
     log = logging.getLogger(name)
     log.setLevel(logging.DEBUG)
 
-    file = os.path.join(BASE_DIR, 'wechatbot.log')
+    file = os.path.join(settings.BASE_DIR, 'logs', 'assbot.log')
     fh = logging.FileHandler(file)
     fh.setLevel(logging.INFO)
     fh.setFormatter(logging.Formatter(
